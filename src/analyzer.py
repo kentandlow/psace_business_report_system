@@ -214,7 +214,9 @@ def _build_report_prompt(
 - 日本語で出力すること
 - Markdownの見出し・表・太字・箇条書きを積極的に活用すること
 - 各主要セクション（1〜5）は最低400字以上のボリュームで記述すること
-- レポート全体で最低3000字以上の内容にすること"""
+- レポート全体で最低3000字以上の内容にすること
+- **絶対に途中で出力を打ち切ったり省略したりしないこと。セクション1から5まで、指定された見出し・表・箇条書き構造を一切崩さず、完全なMarkdownレポートを最後まで出力すること。**
+- セクション見出し（## セクション名）・Markdown表・So What?/インパクト/今後の展望 の小見出し構造は厳守すること"""
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +257,7 @@ def analyze() -> Path:
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-pro",
+        model_name="gemini-2.5-flash",
         system_instruction=SYSTEM_INSTRUCTION,
         generation_config=genai.types.GenerationConfig(
             temperature=0.4,
