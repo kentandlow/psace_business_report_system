@@ -7,6 +7,7 @@ RSS フィード / arXiv API から収集し、data/raw_news.json に保存す�
 import json
 import time
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 from typing import Any
 
@@ -32,66 +33,50 @@ RSS_FEEDS: list[dict] = [
     },
     {
         "name": "Google News – Space Business (EN)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=space+business+when:7d&hl=en-US&gl=US&ceid=US:en"
-        ),
+        "query": "space business",
+        "params": "hl=en-US&gl=US&ceid=US:en",
         "category": "business",
     },
     {
         "name": "Google News – Space Policy (EN)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=space+policy+when:7d&hl=en-US&gl=US&ceid=US:en"
-        ),
+        "query": "space policy",
+        "params": "hl=en-US&gl=US&ceid=US:en",
         "category": "policy",
     },
     {
         "name": "Google News – Space Funding (EN)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=space+startup+funding+when:7d&hl=en-US&gl=US&ceid=US:en"
-        ),
+        "query": "space startup funding",
+        "params": "hl=en-US&gl=US&ceid=US:en",
         "category": "funding",
     },
     {
         "name": "Google News – Space Europe (EN)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=ESA+OR+space+Europe+when:7d&hl=en-US&gl=US&ceid=US:en"
-        ),
+        "query": "ESA OR space Europe",
+        "params": "hl=en-US&gl=US&ceid=US:en",
         "category": "policy",
     },
     {
         "name": "Google News – Space China (EN)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=China+space+when:7d&hl=en-US&gl=US&ceid=US:en"
-        ),
+        "query": "China space",
+        "params": "hl=en-US&gl=US&ceid=US:en",
         "category": "policy",
     },
     {
         "name": "Google News – 宇宙ビジネス (JA)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=宇宙+ビジネス+when:7d&hl=ja&gl=JP&ceid=JP:ja"
-        ),
+        "query": "宇宙 ビジネス",
+        "params": "hl=ja&gl=JP&ceid=JP:ja",
         "category": "business",
     },
     {
         "name": "Google News – 宇宙政策 (JA)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=宇宙+政策+when:7d&hl=ja&gl=JP&ceid=JP:ja"
-        ),
+        "query": "宇宙 政策",
+        "params": "hl=ja&gl=JP&ceid=JP:ja",
         "category": "policy",
     },
     {
         "name": "Google News – 宇宙資金調達 (JA)",
-        "url": (
-            "https://news.google.com/rss/search"
-            "?q=宇宙+資金調達+OR+宇宙+スタートアップ+when:7d&hl=ja&gl=JP&ceid=JP:ja"
-        ),
+        "query": "宇宙 資金調達 OR 宇宙 スタートアップ",
+        "params": "hl=ja&gl=JP&ceid=JP:ja",
         "category": "funding",
     },
 ]
@@ -115,10 +100,27 @@ HEADERS = {
 # ヘルパー関数
 # ---------------------------------------------------------------------------
 
+def _get_date_range() -> tuple[datetime, datetime]:
+    """収集対象の開始日時と終了日時（UTC aware）を返す"""
+    start_str = os.getenv("START_DATE")
+    end_str = os.getenv("END_DATE")
+    
+    now = datetime.now(tz=timezone.utc)
+    if start_str and end_str:
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        return start_dt, end_dt
+    
+    # デフォルトは過去7日間
+    return now - timedelta(days=7), now
 
-def _cutoff() -> datetime:
-    """過去 7 日間の下限日時（UTC aware）を返す"""
-    return datetime.now(tz=timezone.utc) - timedelta(days=7)
+
+def _build_google_news_url(query: str, params: str, start_dt: datetime, end_dt: datetime) -> str:
+    """指定期間のGoogle News RSS URLを構築する"""
+    # yyyy-mm-dd形式に変換
+    start_str = start_dt.strftime("%Y-%m-%d")
+    end_str = end_dt.strftime("%Y-%m-%d")
+    return f"https://news.google.com/rss/search?q={query}+after:{start_str}+before:{end_str}&{params}"
 
 
 def _parse_date(entry: Any) -> datetime | None:
@@ -163,13 +165,19 @@ def _entry_to_dict(entry: Any, category: str, source_name: str) -> dict:
 
 def collect_rss() -> list[dict]:
     """設定済みの RSS フィードからニュースを収集する"""
-    cutoff = _cutoff()
+    start_dt, end_dt = _get_date_range()
+    logger.info(f"対象期間: {start_dt.strftime('%Y-%m-%d')} ~ {end_dt.strftime('%Y-%m-%d')}")
     results: list[dict] = []
 
     for feed_config in RSS_FEEDS:
         name = feed_config["name"]
-        url = feed_config["url"]
         category = feed_config["category"]
+        
+        if "query" in feed_config:
+            url = _build_google_news_url(feed_config["query"], feed_config["params"], start_dt, end_dt)
+        else:
+            url = feed_config["url"]
+            
         logger.info("RSS 取得中: %s", name)
 
         try:
@@ -180,8 +188,8 @@ def collect_rss() -> list[dict]:
             count = 0
             for entry in feed.entries:
                 pub_dt = _parse_date(entry)
-                # 日時不明な場合も取り込む（Google News は日時が取れないことがある）
-                if pub_dt is None or pub_dt >= cutoff:
+                # Google News 等で日時が取得できないものは許容する
+                if pub_dt is None or (start_dt <= pub_dt <= end_dt):
                     results.append(_entry_to_dict(entry, category, name))
                     count += 1
 
@@ -202,13 +210,13 @@ def collect_rss() -> list[dict]:
 
 def collect_arxiv() -> list[dict]:
     """arXiv API から宇宙関連の最新論文を収集する"""
-    cutoff = _cutoff()
+    start_dt, end_dt = _get_date_range()
     results: list[dict] = []
 
     for query in ARXIV_QUERIES:
         logger.info("arXiv 取得中: query=%s", query)
         params = {
-            "search_query": query,
+            "search_query": f"{query} AND submittedDate:[{start_dt.strftime('%Y%m%d')}2359 TO {end_dt.strftime('%Y%m%d')}2359]",
             "sortBy": "submittedDate",
             "sortOrder": "descending",
             "max_results": ARXIV_MAX_RESULTS,
@@ -223,7 +231,7 @@ def collect_arxiv() -> list[dict]:
             count = 0
             for entry in feed.entries:
                 pub_dt = _parse_date(entry)
-                if pub_dt is None or pub_dt >= cutoff:
+                if pub_dt is None or (start_dt <= pub_dt <= end_dt):
                     results.append(_entry_to_dict(entry, "research", "arXiv"))
                     count += 1
 

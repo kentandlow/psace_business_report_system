@@ -5,6 +5,15 @@ on:
     # UTC 月曜 00:00 = JST 月曜 09:00
     - cron: '0 0 * * 1'
   workflow_dispatch:  # GitHub 画面から手動実行も可能
+    inputs:
+      start_date:
+        description: '対象期間の開始日 (例: 2026-02-16) 空白で直近7日'
+        required: false
+        type: string
+      end_date:
+        description: '対象期間の終了日 (例: 2026-02-20) 空白で直近7日'
+        required: false
+        type: string
 
 jobs:
   generate-report:
