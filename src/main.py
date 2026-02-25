@@ -22,8 +22,9 @@ logger = setup_logger("main", logging.INFO)
 
 
 def main() -> None:
-    # .env から環境変数を読み込む（GitHub Actions では Secrets から自動注入）
-    load_dotenv()
+    # .env から環境変数を読み込む
+    # GitHub Actions等の既存の環境変数を優先するため override=False とする
+    load_dotenv(override=False)
 
     # ----------------------------------------------------------------
     # Step 1: 情報収集

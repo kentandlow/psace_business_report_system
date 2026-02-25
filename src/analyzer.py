@@ -163,9 +163,9 @@ def analyze() -> list[dict]:
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
+        logger.error("環境変数 GEMINI_API_KEY が取得できませんでした。ActionsのSecretsや.envの設定を確認してください。")
         raise EnvironmentError(
             "環境変数 GEMINI_API_KEY が設定されていません。"
-            ".env ファイルを確認してください。"
         )
 
     genai.configure(api_key=api_key)
