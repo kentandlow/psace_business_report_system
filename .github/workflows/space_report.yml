@@ -51,9 +51,21 @@ jobs:
 
       # ----------------------------------------------------------------
       # 5. メインスクリプトの実行
+      #    念のため直接環境変数としても渡し、空でないかチェックする
       # ----------------------------------------------------------------
       - name: Generate space business report
-        run: python src/main.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY is empty in GitHub Secrets!"
+            exit 1
+          else
+            echo "GEMINI_API_KEY is properly loaded from Secrets."
+          fi
+          python src/main.py
 
       # ----------------------------------------------------------------
       # 5. 生成された PPTX を Artifacts に保存（30 日間保持）
