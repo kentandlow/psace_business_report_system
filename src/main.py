@@ -2,8 +2,8 @@
 
 python src/main.py を実行するだけで
   1. 情報収集 (collector)
-  2. AI 分析・要約 (analyzer)
-  3. スライド生成 (generator)
+  2. AI 分析・要約 → Markdown レポート生成 (analyzer)
+  3. レポート保存 (generator)
 の全工程が完了する。
 """
 
@@ -41,31 +41,31 @@ def main() -> None:
         sys.exit(1)
 
     # ----------------------------------------------------------------
-    # Step 2: AI 分析・要約
+    # Step 2: AI 分析・Markdown レポート生成
     # ----------------------------------------------------------------
     logger.info("=" * 60)
-    logger.info("【Step 2/3】Gemini API 分析を開始します...")
+    logger.info("【Step 2/3】Gemini API 分析を開始します（APIリクエスト: 1回）...")
     logger.info("=" * 60)
     try:
         from analyzer import analyze
-        slides = analyze()
-        logger.info("  ✓ 分析完了: %d 枚のスライドデータ", len(slides))
+        report_path = analyze()
+        logger.info("  ✓ 分析完了: %s", report_path)
     except Exception as exc:
         logger.error("AI 分析でエラーが発生しました: %s", exc)
         sys.exit(1)
 
     # ----------------------------------------------------------------
-    # Step 3: スライド生成
+    # Step 3: 成果物保存
     # ----------------------------------------------------------------
     logger.info("=" * 60)
-    logger.info("【Step 3/3】スライド生成を開始します...")
+    logger.info("【Step 3/3】レポート保存を開始します...")
     logger.info("=" * 60)
     try:
         from generator import generate
         output_path = generate()
-        logger.info("  ✓ 生成完了: %s", output_path)
+        logger.info("  ✓ 保存完了: %s", output_path)
     except Exception as exc:
-        logger.error("スライド生成でエラーが発生しました: %s", exc)
+        logger.error("レポート保存でエラーが発生しました: %s", exc)
         sys.exit(1)
 
     logger.info("=" * 60)

@@ -7,11 +7,11 @@ on:
   workflow_dispatch:  # GitHub 画面から手動実行も可能
     inputs:
       start_date:
-        description: '対象期間の開始日 (例: 2026-02-16) 空白で直近7日'
+        description: '対象期間の開始日 (例: 2026-02-16) 空白で直近30日'
         required: false
         type: string
       end_date:
-        description: '対象期間の終了日 (例: 2026-02-20) 空白で直近7日'
+        description: '対象期間の終了日 (例: 2026-02-20) 空白で直近30日'
         required: false
         type: string
 
@@ -37,20 +37,30 @@ jobs:
           cache: 'pip'
 
       # ----------------------------------------------------------------
-      # 3. 依存パッケージのインストール
+      # 3. PDF 生成に必要なシステムパッケージをインストール
+      #    xhtml2pdf（純 Python）は GTK 不要。日本語フォントのみ追加する
       # ----------------------------------------------------------------
-      - name: Install dependencies
+      - name: Install system dependencies for PDF generation
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            fonts-noto-cjk
+
+      # ----------------------------------------------------------------
+      # 4. 依存パッケージのインストール
+      # ----------------------------------------------------------------
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       # ----------------------------------------------------------------
-      # 4. .env ファイルの生成 (Secrets から取得)
+      # 5. .env ファイルの生成 (Secrets から取得)
       # ----------------------------------------------------------------
       - name: Create .env file
         run: |
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
 
       # ----------------------------------------------------------------
-      # 5. メインスクリプトの実行
+      # 6. メインスクリプトの実行
       #    念のため直接環境変数としても渡し、空でないかチェックする
       # ----------------------------------------------------------------
       - name: Generate space business report
@@ -68,18 +78,20 @@ jobs:
           python src/main.py
 
       # ----------------------------------------------------------------
-      # 5. 生成された PPTX を Artifacts に保存（30 日間保持）
+      # 7. 生成された PDF・Markdown レポートを Artifacts に保存（30 日間保持）
       # ----------------------------------------------------------------
       - name: Upload report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: space-report-${{ github.run_id }}
-          path: output/*.pptx
+          path: |
+            output/*.pdf
+            output/*.md
           retention-days: 30
           if-no-files-found: warn
 
       # ----------------------------------------------------------------
-      # 6. 収集・分析の中間データも保存（デバッグ用、7 日間保持）
+      # 8. 収集・分析の中間データも保存（デバッグ用、7 日間保持）
       # ----------------------------------------------------------------
       - name: Upload intermediate data as artifact
         uses: actions/upload-artifact@v4
@@ -87,6 +99,6 @@ jobs:
           name: intermediate-data-${{ github.run_id }}
           path: |
             data/raw_news.json
-            data/analyzed_report.json
+            data/analyzed_report.md
           retention-days: 7
           if-no-files-found: warn

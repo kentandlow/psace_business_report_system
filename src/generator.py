@@ -1,189 +1,234 @@
-"""スライド生成モジュール (Step 4)
+"""成果物保存モジュール (Step 4) — Markdown → PDF 変換版
 
-data/analyzed_report.json から PowerPoint (.pptx) ファイルを生成し
-output/ ディレクトリに保存する。
+data/analyzed_report.md を読み込み、コンサル風の CSS を適用した HTML に変換し
+xhtml2pdf (純 Python) で PDF 化して output/ に保存する。
+.md ファイルも同時に output/ に保存する。
+
+出力ファイル:
+  output/space_report_YYYYMMDD.pdf  ← メイン成果物（コンサル風デザイン）
+  output/space_report_YYYYMMDD.md   ← ソーステキスト（バックアップ兼共有用）
 """
 
-import json
+import io
 from datetime import date
 from pathlib import Path
 
-from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.util import Emu, Inches, Pt
+import markdown
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from xhtml2pdf import pisa
 
 from utils import ensure_dirs, setup_logger
 
 logger = setup_logger(__name__)
 
-INPUT_PATH = Path("data/analyzed_report.json")
+INPUT_PATH = Path("data/analyzed_report.md")
 OUTPUT_DIR = Path("output")
 
-# ---------------------------------------------------------------------------
-# カラーパレット（ダークネイビー系）
-# ---------------------------------------------------------------------------
-COLOR_BG = RGBColor(0x0D, 0x1B, 0x2A)      # 濃紺（背景）
-COLOR_TITLE = RGBColor(0xFF, 0xFF, 0xFF)    # 白（タイトル）
-COLOR_BODY = RGBColor(0xD0, 0xE4, 0xFF)     # 薄青白（本文）
-COLOR_ACCENT = RGBColor(0x4F, 0xB3, 0xBF)  # ティール（アクセント・区切り線）
-COLOR_SOURCE = RGBColor(0x80, 0xA0, 0xC0)  # 灰青（出典）
-COLOR_NUM = RGBColor(0x4F, 0xB3, 0xBF)     # ティール（スライド番号）
-
 
 # ---------------------------------------------------------------------------
-# ユーティリティ
+# 日本語フォント検索
 # ---------------------------------------------------------------------------
 
+_FONT_NAME = "ReportFont"
 
-def _set_bg(slide, color: RGBColor) -> None:
-    """スライド背景色を単色で設定する"""
-    fill = slide.background.fill
-    fill.solid()
-    fill.fore_color.rgb = color
-
-
-def _add_textbox(
-    slide,
-    text: str,
-    left,
-    top,
-    width,
-    height,
-    font_size: int,
-    bold: bool = False,
-    color: RGBColor = COLOR_BODY,
-    align=PP_ALIGN.LEFT,
-) -> None:
-    """テキストボックスをスライドに追加する"""
-    txBox = slide.shapes.add_textbox(left, top, width, height)
-    tf = txBox.text_frame
-    tf.word_wrap = True
-
-    p = tf.paragraphs[0]
-    p.alignment = align
-    run = p.add_run()
-    run.text = text
-    run.font.size = Pt(font_size)
-    run.font.bold = bold
-    run.font.color.rgb = color
+def _find_cjk_font() -> str | None:
+    """OS 別に日本語フォントファイルのパスを探索して返す（見つからなければ None）"""
+    candidates = [
+        # Windows
+        "C:/Windows/Fonts/YuGothR.ttc",
+        "C:/Windows/Fonts/yugothic.ttf",
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        # Linux (apt: fonts-noto-cjk)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            logger.info("日本語フォント発見: %s", path)
+            return path
+    logger.warning("日本語フォントが見つかりませんでした。文字化けの可能性があります。")
+    return None
 
 
-def _add_divider(slide, left, top, width) -> None:
-    """水平区切り線（細長い矩形）をアクセントカラーで描画する"""
-    from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
+def _register_font(font_path: str) -> bool:
+    """reportlab に日本語フォントを直接登録する。
 
-    shape = slide.shapes.add_shape(
-        MSO_AUTO_SHAPE_TYPE.RECTANGLE,
-        left, top, width, Emu(30000),  # 高さ約 0.03 インチ
-    )
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = COLOR_ACCENT
-    shape.line.fill.background()  # 枠線なし
+    xhtml2pdf の @font-face 処理（ファイルコピー）を使わずに
+    reportlab の pdfmetrics を経由することで TTC ファイルの読み込みエラーを回避する。
+    """
+    try:
+        pdfmetrics.registerFont(TTFont(_FONT_NAME, font_path, subfontIndex=0))
+        logger.info("フォント登録完了: %s → '%s'", font_path, _FONT_NAME)
+        return True
+    except Exception as exc:
+        logger.warning("フォント登録失敗: %s", exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
-# 表紙スライド
+# CSS スタイルシート（xhtml2pdf / CSS2 互換）
 # ---------------------------------------------------------------------------
 
-
-def _build_title_slide(prs: Presentation, data: dict) -> None:
-    """表紙（スライド 1）を生成する"""
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # 空白レイアウト
-    _set_bg(slide, COLOR_BG)
-
-    w = prs.slide_width
-    h = prs.slide_height
-
-    # アクセントバー（上部）
-    _add_divider(slide, Inches(0), Inches(0.6), w)
-
-    # メインタイトル
-    _add_textbox(
-        slide, data.get("title", ""),
-        Inches(0.8), Inches(1.2), w - Inches(1.6), Inches(1.8),
-        font_size=36, bold=True, color=COLOR_TITLE, align=PP_ALIGN.CENTER,
+def _build_css(font_registered: bool) -> str:
+    """コンサル風 CSS を構築する。
+    reportlab にフォントが登録済みの場合は ReportFont を使用する。
+    @font-face は使わず、pdfmetrics 登録済みのフォント名を直接 font-family で指定する。
+    """
+    font_family_decl = (
+        f"{_FONT_NAME}, Helvetica, sans-serif" if font_registered
+        else "Helvetica, sans-serif"
     )
 
-    # アクセントバー（中央）
-    _add_divider(slide, Inches(2.0), Inches(3.1), w - Inches(4.0))
+    return f"""
+@page {{
+    size: A4;
+    margin: 20mm 16mm 22mm 16mm;
+}}
 
-    # サブテキスト（日付・期間・情報源）
-    body = "\n".join(data.get("content", []))
-    _add_textbox(
-        slide, body,
-        Inches(0.8), Inches(3.4), w - Inches(1.6), Inches(2.5),
-        font_size=18, color=COLOR_BODY, align=PP_ALIGN.CENTER,
-    )
+body {{
+    font-family: {font_family_decl};
+    font-size: 9.5pt;
+    line-height: 1.65;
+    color: #1a1a2e;
+}}
 
-    # フッター
-    _add_textbox(
-        slide, "Space Business Weekly Report  |  Powered by Gemini API",
-        Inches(0.5), h - Inches(0.6), w - Inches(1.0), Inches(0.5),
-        font_size=9, color=COLOR_SOURCE, align=PP_ALIGN.CENTER,
-    )
+/* ── 見出し ──────────────────────────────── */
+h1 {{
+    font-size: 18pt;
+    color: #0d1b2a;
+    border-bottom: 2px solid #4fb3bf;
+    padding-bottom: 6px;
+    margin-top: 6px;
+    margin-bottom: 4px;
+}}
+
+h2 {{
+    font-size: 12pt;
+    color: #ffffff;
+    background-color: #0d3b52;
+    padding: 6px 12px;
+    margin-top: 20px;
+    margin-bottom: 6px;
+}}
+
+h3 {{
+    font-size: 10.5pt;
+    color: #0d3b52;
+    background-color: #eaf4f5;
+    padding: 3px 8px;
+    border-left: 4px solid #4fb3bf;
+    margin-top: 12px;
+    margin-bottom: 4px;
+}}
+
+h4 {{
+    font-size: 9.5pt;
+    color: #2e86c1;
+    margin-top: 8px;
+    margin-bottom: 3px;
+}}
+
+/* ── 本文 ─────────────────────────────────── */
+p {{
+    margin: 4px 0;
+}}
+
+ul, ol {{
+    padding-left: 16px;
+    margin: 4px 0;
+}}
+
+li {{
+    margin-bottom: 2px;
+}}
+
+strong {{
+    color: #0a2540;
+}}
+
+hr {{
+    border: 1px solid #4fb3bf;
+    margin: 12px 0;
+}}
+
+blockquote {{
+    border-left: 3px solid #4fb3bf;
+    margin: 6px 2px;
+    padding: 4px 10px;
+    background-color: #f0f8f9;
+    color: #2e4057;
+}}
+
+code {{
+    background-color: #f0f4f8;
+    font-size: 8pt;
+    padding: 1px 3px;
+}}
+
+/* ── 表 ──────────────────────────────────── */
+table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 12px 0;
+    font-size: 8.5pt;
+}}
+
+th {{
+    background-color: #2e86c1;
+    color: #ffffff;
+    padding: 5px 8px;
+    text-align: left;
+    font-weight: bold;
+    border: 1px solid #1a6fa0;
+}}
+
+td {{
+    padding: 4px 8px;
+    border: 1px solid #c8d8e8;
+    vertical-align: top;
+}}
+"""
 
 
 # ---------------------------------------------------------------------------
-# 通常コンテンツスライド
+# Markdown → スタイル付き HTML
 # ---------------------------------------------------------------------------
 
-
-def _build_content_slide(prs: Presentation, data: dict) -> None:
-    """通常のコンテンツスライドを生成する"""
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_bg(slide, COLOR_BG)
-
-    w = prs.slide_width
-    h = prs.slide_height
-
-    slide_num = data.get("slide_number", "")
-    title = data.get("title", "")
-    content_items = data.get("content", [])
-    sources = data.get("sources", [])
-
-    # スライド番号（右上）
-    _add_textbox(
-        slide, f"{slide_num} / 30",
-        w - Inches(1.5), Inches(0.1), Inches(1.3), Inches(0.35),
-        font_size=10, color=COLOR_NUM, align=PP_ALIGN.RIGHT,
+def _to_styled_html(md_text: str, css: str, today_str: str) -> str:
+    """Markdown テキストを CSS 付きの完全な HTML 文字列に変換する"""
+    md_proc = markdown.Markdown(
+        extensions=["tables", "fenced_code"],
     )
+    body_html = md_proc.convert(md_text)
 
-    # タイトル
-    _add_textbox(
-        slide, title,
-        Inches(0.5), Inches(0.1), w - Inches(2.0), Inches(0.9),
-        font_size=26, bold=True, color=COLOR_TITLE,
-    )
-
-    # 区切り線
-    _add_divider(slide, Inches(0.5), Inches(1.05), w - Inches(1.0))
-
-    # 本文（箇条書き）
-    body_text = "\n".join(f"▶  {item}" for item in content_items)
-    _add_textbox(
-        slide, body_text,
-        Inches(0.5), Inches(1.2), w - Inches(1.0), h - Inches(2.6),
-        font_size=17, color=COLOR_BODY,
-    )
-
-    # 出典（フッター）
-    if sources:
-        source_str = "出典: " + " | ".join(str(s) for s in sources[:3])
-        _add_textbox(
-            slide, source_str,
-            Inches(0.5), h - Inches(0.65), w - Inches(1.0), Inches(0.55),
-            font_size=8, color=COLOR_SOURCE,
-        )
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>宇宙ビジネス週次戦略インテリジェンスレポート {today_str}</title>
+  <style>{css}</style>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
 # メイン
 # ---------------------------------------------------------------------------
 
-
 def generate() -> Path:
-    """analyzed_report.json から PPTX を生成して output/ に保存する"""
+    """analyzed_report.md を PDF（+ MD）に変換して output/ に保存する。
+
+    Returns:
+        Path: 保存した PDF ファイルのパス（PDF 生成失敗時は MD ファイルのパス）
+    """
     ensure_dirs()
 
     if not INPUT_PATH.exists():
@@ -191,26 +236,43 @@ def generate() -> Path:
             f"{INPUT_PATH} が見つかりません。先に analyzer.py を実行してください。"
         )
 
-    slides_data: list[dict] = json.loads(INPUT_PATH.read_text(encoding="utf-8"))
-    logger.info("=== スライド生成開始: %d 枚 ===", len(slides_data))
+    today_str = date.today().strftime("%Y%m%d")
+    md_text = INPUT_PATH.read_text(encoding="utf-8")
 
-    prs = Presentation()
-    # 16:9 ワイドスクリーン
-    prs.slide_width = Inches(13.33)
-    prs.slide_height = Inches(7.5)
+    # ── .md ファイルを保存 ─────────────────────────────────
+    md_path = OUTPUT_DIR / f"space_report_{today_str}.md"
+    md_path.write_text(md_text, encoding="utf-8")
+    logger.info("Markdown 保存完了: %s (%d 文字)", md_path, len(md_text))
 
-    for i, slide_data in enumerate(slides_data):
-        if i == 0:
-            _build_title_slide(prs, slide_data)
-        else:
-            _build_content_slide(prs, slide_data)
-        logger.debug("  スライド %d 生成", slide_data.get("slide_number", i + 1))
+    # ── Markdown → HTML → PDF 変換 ────────────────────────
+    pdf_path = OUTPUT_DIR / f"space_report_{today_str}.pdf"
+    try:
+        logger.info("PDF 変換中（xhtml2pdf）...")
+        font_path = _find_cjk_font()
+        font_registered = _register_font(font_path) if font_path else False
+        css = _build_css(font_registered)
+        html_str = _to_styled_html(md_text, css, today_str)
 
-    output_path = OUTPUT_DIR / f"space_report_{date.today().strftime('%Y%m%d')}.pptx"
-    prs.save(str(output_path))
-    logger.info("PPTX 保存完了: %s", output_path)
+        with open(pdf_path, "wb") as pdf_file:
+            result = pisa.CreatePDF(
+                src=io.StringIO(html_str),
+                dest=pdf_file,
+                encoding="utf-8",
+            )
 
-    return output_path
+        if result.err:
+            raise RuntimeError(f"xhtml2pdf エラーコード: {result.err}")
+
+        size_kb = pdf_path.stat().st_size // 1024
+        logger.info("PDF 保存完了: %s (%d KB)", pdf_path, size_kb)
+        return pdf_path
+
+    except Exception as exc:
+        logger.warning(
+            "PDF 変換に失敗しました（%s）。Markdown ファイルを成果物として使用します。",
+            exc,
+        )
+        return md_path
 
 
 if __name__ == "__main__":
