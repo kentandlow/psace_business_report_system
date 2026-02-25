@@ -111,16 +111,22 @@ def _get_date_range() -> tuple[datetime, datetime]:
         end_dt = datetime.strptime(end_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
         return start_dt, end_dt
     
-    # デフォルトは過去7日間
-    return now - timedelta(days=7), now
+    # デフォルトは過去30日間
+    return now - timedelta(days=30), now
 
 
 def _build_google_news_url(query: str, params: str, start_dt: datetime, end_dt: datetime) -> str:
     """指定期間のGoogle News RSS URLを構築する"""
+    import urllib.parse
     # yyyy-mm-dd形式に変換
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str = end_dt.strftime("%Y-%m-%d")
-    return f"https://news.google.com/rss/search?q={query}+after:{start_str}+before:{end_str}&{params}"
+    
+    # query全体をエンコードする（+after:... +before:... 等が正しく認識されるように）
+    full_query = f"{query} after:{start_str} before:{end_str}"
+    encoded_query = urllib.parse.quote_plus(full_query)
+    
+    return f"https://news.google.com/rss/search?q={encoded_query}&{params}"
 
 
 def _parse_date(entry: Any) -> datetime | None:
