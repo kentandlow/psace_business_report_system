@@ -43,13 +43,16 @@ jobs:
         run: pip install -r requirements.txt
 
       # ----------------------------------------------------------------
-      # 4. メインスクリプトの実行
-      #    GEMINI_API_KEY は GitHub Secrets から注入する
-      #    （Settings → Secrets and variables → Actions → New repository secret）
+      # 4. .env ファイルの生成 (Secrets から取得)
+      # ----------------------------------------------------------------
+      - name: Create .env file
+        run: |
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" > .env
+
+      # ----------------------------------------------------------------
+      # 5. メインスクリプトの実行
       # ----------------------------------------------------------------
       - name: Generate space business report
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python src/main.py
 
       # ----------------------------------------------------------------
