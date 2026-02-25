@@ -101,14 +101,14 @@ HEADERS = {
 # ---------------------------------------------------------------------------
 
 def _get_date_range() -> tuple[datetime, datetime]:
-    """収集対象の開始日時と終了日時（UTC aware）を返す"""
+    """収集対象の開始日時と終了日時（naive UTC datetime）を返す"""
     start_str = os.getenv("START_DATE")
     end_str = os.getenv("END_DATE")
     
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.utcnow()
     if start_str and end_str:
-        start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        end_dt = datetime.strptime(end_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         return start_dt, end_dt
     
     # デフォルトは過去30日間
@@ -130,15 +130,15 @@ def _build_google_news_url(query: str, params: str, start_dt: datetime, end_dt: 
 
 
 def _parse_date(entry: Any) -> datetime | None:
-    """feedparser エントリから公開日時を UTC aware datetime に変換する"""
+    """feedparser エントリから公開日時を naive な datetime (UTC相当) に変換する"""
     import calendar
 
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         ts = calendar.timegm(entry.published_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
+        return datetime.utcfromtimestamp(ts)
     if hasattr(entry, "updated_parsed") and entry.updated_parsed:
         ts = calendar.timegm(entry.updated_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
+        return datetime.utcfromtimestamp(ts)
     return None
 
 
