@@ -44,7 +44,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            fonts-noto-cjk
+            fonts-noto-cjk \
+            libcairo2-dev \
+            pkg-config \
+            python3-dev
 
       # ----------------------------------------------------------------
       # 4. 依存パッケージのインストール
