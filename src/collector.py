@@ -118,13 +118,11 @@ def _get_date_range() -> tuple[datetime, datetime]:
 def _build_google_news_url(query: str, params: str, start_dt: datetime, end_dt: datetime) -> str:
     """指定期間のGoogle News RSS URLを構築する"""
     import urllib.parse
-    # yyyy-mm-dd形式に変換
-    start_str = start_dt.strftime("%Y-%m-%d")
-    end_str = end_dt.strftime("%Y-%m-%d")
     
-    # query全体をエンコードする（+after:... +before:... 等が正しく認識されるように）
-    full_query = f"{query} after:{start_str} before:{end_str}"
-    encoded_query = urllib.parse.quote_plus(full_query)
+    # query全体をエンコードする
+    # 注: after: before: 等の検索演算子がRSSで機能しづらくなっているケースに備え
+    # URLには含めず、Python側での日付フィルタリング(pub_dt)に完全に任せる
+    encoded_query = urllib.parse.quote_plus(query)
     
     return f"https://news.google.com/rss/search?q={encoded_query}&{params}"
 
@@ -185,6 +183,7 @@ def collect_rss() -> list[dict]:
             url = feed_config["url"]
             
         logger.info("RSS 取得中: %s", name)
+        logger.info("  URL: %s", url)
 
         try:
             feed = feedparser.parse(url, request_headers=HEADERS)
@@ -199,7 +198,10 @@ def collect_rss() -> list[dict]:
                     results.append(_entry_to_dict(entry, category, name))
                     count += 1
 
-            logger.info("  → %d 件取得", count)
+            if len(feed.entries) == 0:
+                logger.warning("  → エントリが0件です。URL=%s", url)
+            else:
+                logger.info("  → %d 件取得 (全 %d 件中)", count, len(feed.entries))
 
         except Exception as exc:
             logger.error("RSS 取得失敗 (%s): %s", name, exc)
