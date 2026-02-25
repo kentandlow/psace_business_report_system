@@ -1,6 +1,7 @@
-"""Gemini API による分析・要約モジュール (Step 3)
+"""Gemini API による分析・要約モジュール (Step 3) — MBB グレードアップ版
 
-data/raw_news.json を読み込み、30 枚スライド分の構造化 JSON を生成して
+data/raw_news.json を読み込み、マッキンゼー/BCG レベルの
+戦略インサイト・グラフデータを含む 30 枚スライド分の JSON を生成して
 data/analyzed_report.json に保存する。
 """
 
@@ -9,6 +10,7 @@ import os
 import time
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import google.generativeai as genai
 
@@ -44,24 +46,127 @@ SLIDE_PLAN = {
     "insight":  {"start": 27, "count": 4},
 }
 
-SYSTEM_INSTRUCTION = """あなたは世界最高の宇宙ビジネスアナリストです。
-提供された生データを分析し、エグゼクティブや投資家向けに毎週の宇宙ビジネス動向レポートをスライド形式で出力します。
+# ---------------------------------------------------------------------------
+# MBB レベル System Instruction
+# ---------------------------------------------------------------------------
 
-出力形式の厳格なルール:
-- 必ず JSON 配列のみを返してください。Markdown のコードブロック（```json など）は不要です。
-- 各要素は {"slide_number": int, "title": str, "content": [str, ...], "sources": [str, ...]} の形式にしてください。
-- content は 1 枚あたり 4〜5 点の箇条書きにしてください（各 60 字以内）。
-- sources には出典 URL または出典名を含めてください。
-- 日本語で出力してください。"""
+SYSTEM_INSTRUCTION = """あなたは、マッキンゼー・アンド・カンパニーとBCG（ボストン・コンサルティング・グループ）双方での実務経験を持つ、宇宙ビジネス専門のシニア・ストラテジスト（最上位パートナー）です。
+
+【厳守すべき思考規律】
+1. 事実（Fact）の羅列は絶対禁止。提供されたニュースはあくまで根拠データとして活用し、必ず以下の問いに答えること。
+   - So What?（だから何が重要なのか）
+   - Impact（業界・競合・投資環境にどう影響するか）
+   - Forward-looking（次の1〜3ヶ月で何が起きるか）
+2. 各スライドの lead_message は「そのページで最も言いたい結論を1文で」。経営幹部はここだけ読めば本質を把握できる品質を目指すこと。
+3. グラフや表のデータ（values）は、ニュース記事の件数・記述内容・業界知識から論理的に推計・集計すること。絶対精度より「業界トレンドを正確に表現すること」を優先。「推計値」「論理的推論に基づく概算」として明示すること。
+
+【出力スキーマ — 厳格に遵守すること】
+JSON 配列を返すこと。各要素は以下のスキーマ:
+{
+  "slide_number": <整数>,
+  "title": "<セクションタイトル（25字以内）>",
+  "lead_message": "<最重要結論・メインメッセージ（40字以内、体言止め不可・断言口調）>",
+  "insights": [
+    "<So What? の観点で（60字以内）>",
+    "<Impact の観点で（60字以内）>",
+    "<Forward-looking の観点で（60字以内）>"
+  ],
+  "visuals": {
+    "type": "<'chart_bar' | 'chart_pie' | 'table' | 'none'>",
+    "title": "<グラフ・表のタイトル（空の場合は空文字）>",
+    "labels": ["<ラベル1>", "<ラベル2>", ...],
+    "values": [<数値1>, <数値2>, ...],
+    "headers": ["<列ヘッダー1>", "<列ヘッダー2>", ...],
+    "rows": [["<セル値1>", "<セル値2>", ...], ...]
+  },
+  "sources": ["<出典URLまたは媒体名>", ...]
+}
+
+【visuals フィールドの使い分け】
+- chart_bar / chart_pie: labels と values を設定。headers と rows は空配列 []。
+- table: headers と rows を設定。labels と values は空配列 []。
+- none: labels, values, headers, rows はすべて空配列 []。
+
+【必須】Markdown コードブロック（```json など）は使用禁止。JSON 配列のみ出力すること。
+【必須】日本語で出力すること。"""
+
+
+# ---------------------------------------------------------------------------
+# 拡張 JSON スキーマ対応のプレースホルダー生成
+# ---------------------------------------------------------------------------
+
+def _placeholder_slides(label: str, start: int, count: int, message: str) -> list[dict]:
+    """データ取得失敗時のプレースホルダースライドを生成する"""
+    return [
+        {
+            "slide_number": start + i,
+            "title": f"{label} ({i + 1})",
+            "lead_message": "データ取得に失敗しました",
+            "insights": [message],
+            "visuals": {
+                "type": "none",
+                "title": "",
+                "labels": [],
+                "values": [],
+                "headers": [],
+                "rows": [],
+            },
+            "sources": [],
+        }
+        for i in range(count)
+    ]
 
 
 # ---------------------------------------------------------------------------
 # プロンプト生成
 # ---------------------------------------------------------------------------
 
+CATEGORY_SLIDE_DESIGN = {
+    "policy": [
+        "政策全体サマリー: 日米欧中の政策動向を俯瞰し、最重要変化を特定。visuals.type='chart_bar' で各国の政策活動量（推計件数）を比較。",
+        "最重要政策トピック①: 最もインパクトが大きいニュースを深掘り。So What? と業界への Impact を明示。適切な visuals を選択。",
+        "最重要政策トピック②: 2番目に重要なニュースを深掘り。table で比較軸を示すと効果的。",
+        "地政学的リスクと機会: 国際競争・協力関係の変化を分析。chart_bar で各国の動向強度を比較。",
+        "規制環境の変化: 新たな規制・許認可の動きとビジネスインパクトを分析。",
+        "政策セクション総括: 今後1ヶ月の注目ポイントと投資家への示唆。visuals.type='none'。",
+    ],
+    "research": [
+        "研究動向サマリー: 今週の主要研究テーマを俯瞰。chart_pie で研究分野別の件数比率を示す。",
+        "ブレークスルー研究①: 最も商業応用可能性が高い研究を深掘り。",
+        "ブレークスルー研究②: 2番目に重要な研究を深掘り。",
+        "技術成熟度と商業化ギャップ: 研究から事業化までの距離感を分析。table で技術別のTRL（技術成熟度）推計を示す。",
+        "競争上の示唆: どの技術領域で誰がリードしているか分析。chart_bar で機関別の論文数推計を示す。",
+        "研究セクション総括: 投資家が注目すべき研究トレンドと時間軸。",
+    ],
+    "business": [
+        "ビジネス動向サマリー: 今週の主要ビジネストレンドを俯瞰。chart_bar で企業/分野別の注目度を比較。",
+        "主要ビジネス案件①: 最重要ビジネスニュースを深掘り。競合・市場への影響を分析。",
+        "主要ビジネス案件②: 2番目の重要案件を深掘り。",
+        "市場構図の変化: 既存プレイヤーと新興企業の勢力図変化を分析。table で主要企業の動向比較。",
+        "バリューチェーン分析: どのセグメントで付加価値が生まれているか。chart_bar でセグメント別市場規模推計。",
+        "ビジネスセクション総括: M&A・提携・IPOの観点での投資家示唆。",
+    ],
+    "funding": [
+        "資金調達全体像: 今週の調達額・件数の全体サマリー。chart_bar でセクター別推計調達額を比較。",
+        "注目調達案件①: 最も注目すべき資金調達案件の深掘り。投資家の意図と業界への影響を分析。",
+        "注目調達案件②: 2番目の注目案件を深掘り。",
+        "投資トレンド分析: どのステージ・分野に資金が集まっているかの分析。chart_pie でステージ別比率。",
+        "日本のスタートアップ動向: 国内宇宙スタートアップの資金調達状況と課題。",
+        "資金調達セクション総括: VCが今注目するテーマと今後の調達見通し。table で注目企業リスト。",
+    ],
+}
+
+INSIGHT_SLIDE_DESIGN = [
+    "今週の最重要変化点: レポート全体を通じて最も重要な変化を1枚で整理。table で変化点・インパクト・タイムラインを構造化。",
+    "業界構図の変化シナリオ: 今週の出来事が業界の中長期構図をどう変えるか分析。chart_bar で各シナリオの確率推計（%）。",
+    "投資家向け総合示唆: 今週のニュースから導かれる投資判断の材料を整理。table で投資テーマ・推奨アクション・リスク。",
+    "来週の注目ポイント: 今後1週間で注視すべきイベント・発表・動向。visuals.type='none'。",
+]
+
 
 def _build_category_prompt(
     category_label: str,
+    category_key: str,
     items: list[dict],
     slide_start: int,
     slide_count: int,
@@ -71,17 +176,29 @@ def _build_category_prompt(
         f"    URL: {item['url']}\n"
         f"    概要: {item['summary'][:500]}\n"
         f"    日時: {item.get('published', '不明')}"
-        for i, item in enumerate(items[:30])  # 最大 30 件
+        for i, item in enumerate(items[:30])
     )
+
+    designs = CATEGORY_SLIDE_DESIGN.get(category_key, [])
+    design_instructions = "\n".join(
+        f"  - スライド {slide_start + i} ({i + 1}枚目): {d}"
+        for i, d in enumerate(designs[:slide_count])
+    )
+
     return (
-        f"以下は今週の「{category_label}」に関するニュース一覧です。\n\n"
+        f"以下は今週の「{category_label}」に関するニュース一覧です（{len(items[:30])} 件）。\n\n"
         f"{news_text}\n\n"
-        f"上記を分析して、スライド {slide_start} 番から "
-        f"{slide_start + slide_count - 1} 番の {slide_count} 枚分の内容を "
-        f"JSON 配列で出力してください。\n"
-        f'形式: [{{"slide_number": <番号>, "title": "<タイトル>", '
-        f'"content": ["<箇条書き1>", ...], "sources": ["<URL>", ...]}}]\n'
-        f"JSON 配列のみ返してください。"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"タスク: 上記を分析し、スライド {slide_start}〜{slide_start + slide_count - 1} の "
+        f"{slide_count} 枚分のコンサル品質スライドデータを JSON 配列で出力してください。\n\n"
+        "各スライドの設計指針（必ず従うこと）:\n"
+        f"{design_instructions}\n\n"
+        "重要な品質基準:\n"
+        "- lead_message は結論を断言する1文（40字以内）\n"
+        "- insights は So What / Impact / Forward-looking の3視点\n"
+        "- visuals のグラフデータは記事から論理的に推計した値（推計であることは sources に明示）\n"
+        "- table は headers（列名）と rows（データ行の配列）を必ず設定\n\n"
+        "JSON 配列のみ返してください。"
     )
 
 
@@ -91,18 +208,25 @@ def _build_insight_prompt(
     slide_count: int,
 ) -> str:
     summary = "\n".join(
-        f"[スライド{s['slide_number']}] {s['title']}: "
-        + " / ".join(s.get("content", [])[:2])
+        f"[スライド{s['slide_number']}] {s['title']}: {s.get('lead_message', '')} / "
+        + " / ".join(s.get("insights", [])[:1])
         for s in all_slides
+        if s.get("slide_number", 0) >= 3
     )
+
+    design_instructions = "\n".join(
+        f"  - スライド {slide_start + i} ({i + 1}枚目): {d}"
+        for i, d in enumerate(INSIGHT_SLIDE_DESIGN[:slide_count])
+    )
+
     return (
-        "以下は今週のレポート全体の要約です。\n\n"
+        "以下はレポート全体の週次サマリーです。\n\n"
         f"{summary}\n\n"
-        "全体を踏まえて、エグゼクティブ・投資家向けの考察と展望スライドを "
-        f"スライド {slide_start} 番から {slide_start + slide_count - 1} 番の "
-        f"{slide_count} 枚分、JSON 配列で出力してください。\n"
-        f'形式: [{{"slide_number": <番号>, "title": "<タイトル>", '
-        f'"content": ["<箇条書き1>", ...], "sources": []}}]\n'
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "タスク: 全体を総合的に分析し、エグゼクティブ・投資家向けの「考察と展望」セクションを "
+        f"スライド {slide_start}〜{slide_start + slide_count - 1} の {slide_count} 枚で生成してください。\n\n"
+        "各スライドの設計指針（必ず従うこと）:\n"
+        f"{design_instructions}\n\n"
         "JSON 配列のみ返してください。"
     )
 
@@ -126,30 +250,17 @@ def _call_gemini(model: genai.GenerativeModel, prompt: str) -> list[dict]:
                 if not line.strip().startswith("```")
             )
 
-        return json.loads(text)
+        result = json.loads(text)
+        logger.debug("Gemini 出力サンプル: %s", json.dumps(result[:1], ensure_ascii=False)[:300])
+        return result
 
     except json.JSONDecodeError as exc:
         raw = locals().get("text", "")
-        logger.error(
-            "JSON パース失敗: %s\nレスポンス冒頭: %.300s", exc, raw
-        )
+        logger.error("JSON パース失敗: %s\nレスポンス冒頭: %.400s", exc, raw)
         return []
     except Exception as exc:
         logger.error("Gemini API 呼び出し失敗: %s", exc)
         return []
-
-
-def _placeholder_slides(label: str, start: int, count: int, message: str) -> list[dict]:
-    """データ取得失敗時のプレースホルダースライドを生成する"""
-    return [
-        {
-            "slide_number": start + i,
-            "title": f"{label} ({i + 1})",
-            "content": [message],
-            "sources": [],
-        }
-        for i in range(count)
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +274,11 @@ def analyze() -> list[dict]:
 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        logger.error("環境変数 GEMINI_API_KEY が取得できませんでした。ActionsのSecretsや.envの設定を確認してください。")
-        raise EnvironmentError(
-            "環境変数 GEMINI_API_KEY が設定されていません。"
+        logger.error(
+            "環境変数 GEMINI_API_KEY が取得できませんでした。"
+            "ActionsのSecretsや.envの設定を確認してください。"
         )
+        raise EnvironmentError("環境変数 GEMINI_API_KEY が設定されていません。")
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
@@ -174,11 +286,11 @@ def analyze() -> list[dict]:
         system_instruction=SYSTEM_INSTRUCTION,
         generation_config=genai.types.GenerationConfig(
             response_mime_type="application/json",
-            temperature=0.3,
+            temperature=0.4,  # 戦略的洞察の生成のため若干高めに設定
         ),
     )
 
-    logger.info("=== Gemini API 分析開始 ===")
+    logger.info("=== Gemini API 分析開始（MBB グレード）===")
 
     if not INPUT_PATH.exists():
         raise FileNotFoundError(
@@ -200,24 +312,41 @@ def analyze() -> list[dict]:
         {
             "slide_number": 1,
             "title": "宇宙ビジネス動向 週次レポート",
-            "content": [
+            "lead_message": "戦略コンサルタント視点で今週の宇宙ビジネスを総括する",
+            "insights": [
                 f"レポート生成日: {date.today().isoformat()}",
                 "対象期間: 過去 7 日間",
                 "情報源: SpaceNews / Google News / arXiv 等",
-                "対象地域: 日本・米国・欧州・中国",
             ],
+            "visuals": {
+                "type": "none",
+                "title": "",
+                "labels": [],
+                "values": [],
+                "headers": [],
+                "rows": [],
+            },
             "sources": [],
         },
         {
             "slide_number": 2,
             "title": "目次",
-            "content": [
+            "lead_message": "5 つのセクションで宇宙ビジネスの全体像を俯瞰する",
+            "insights": [
                 "1. 宇宙政策ニュース（スライド 3〜8）",
                 "2. 最新研究内容（スライド 9〜14）",
                 "3. 宇宙ビジネスニュース（スライド 15〜20）",
                 "4. 資金調達ニュース（スライド 21〜26）",
                 "5. 考察と展望（スライド 27〜30）",
             ],
+            "visuals": {
+                "type": "none",
+                "title": "",
+                "labels": [],
+                "values": [],
+                "headers": [],
+                "rows": [],
+            },
             "sources": [],
         },
     ]
@@ -240,7 +369,9 @@ def analyze() -> list[dict]:
             )
             continue
 
-        prompt = _build_category_prompt(label, cat_items, plan["start"], plan["count"])
+        prompt = _build_category_prompt(
+            label, cat, cat_items, plan["start"], plan["count"]
+        )
         slides = _call_gemini(model, prompt)
 
         if slides:
@@ -284,10 +415,33 @@ def analyze() -> list[dict]:
         "分析完了: %d 枚のスライドデータを %s に保存", len(all_slides), OUTPUT_PATH
     )
 
+    # ---- 出力品質の簡易チェック ----
+    _quality_check(all_slides)
+
     return all_slides
+
+
+def _quality_check(slides: list[dict[str, Any]]) -> None:
+    """生成された JSON が期待スキーマを満たしているかログで確認する"""
+    valid_types = {"chart_bar", "chart_pie", "table", "none"}
+
+    def _is_valid(s: dict[str, Any]) -> bool:
+        has_lead = bool(s.get("lead_message"))
+        has_insights = isinstance(s.get("insights"), list) and len(s.get("insights", [])) > 0
+        has_visuals_type = s.get("visuals", {}).get("type") in valid_types
+        return has_lead and has_insights and has_visuals_type
+
+    ng_slides = [s.get("slide_number") for s in slides if not _is_valid(s)]
+    ok = len(slides) - len(ng_slides)
+
+    logger.info("品質チェック: OK=%d / 全%d枚", ok, len(slides))
+    if ng_slides:
+        logger.warning("スキーマ不備スライド: %s", ng_slides)
+    else:
+        logger.info("全スライドがスキーマを満たしています。")
 
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=False)
     analyze()
