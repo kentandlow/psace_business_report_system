@@ -91,8 +91,8 @@ ARXIV_MAX_RESULTS = 15
 
 HEADERS = {
     "User-Agent": (
-        "SpaceBusinessReportBot/1.0 "
-        "(automated academic/business research; non-commercial)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     )
 }
 
@@ -224,7 +224,7 @@ def collect_arxiv() -> list[dict]:
     for query in ARXIV_QUERIES:
         logger.info("arXiv 取得中: query=%s", query)
         params = {
-            "search_query": f"{query} AND submittedDate:[{start_dt.strftime('%Y%m%d')}2359 TO {end_dt.strftime('%Y%m%d')}2359]",
+            "search_query": query,  # 日付クエリは不要（Python側でフィルタ）
             "sortBy": "submittedDate",
             "sortOrder": "descending",
             "max_results": ARXIV_MAX_RESULTS,
