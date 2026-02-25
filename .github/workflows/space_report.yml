@@ -1,0 +1,68 @@
+name: 宇宙ビジネス動向レポート 週次自動生成
+
+on:
+  schedule:
+    # UTC 月曜 00:00 = JST 月曜 09:00
+    - cron: '0 0 * * 1'
+  workflow_dispatch:  # GitHub 画面から手動実行も可能
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. リポジトリの Checkout
+      # ----------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------
+      # 2. Python 環境のセットアップ
+      # ----------------------------------------------------------------
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      # ----------------------------------------------------------------
+      # 3. 依存パッケージのインストール
+      # ----------------------------------------------------------------
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ----------------------------------------------------------------
+      # 4. メインスクリプトの実行
+      #    GEMINI_API_KEY は GitHub Secrets から注入する
+      #    （Settings → Secrets and variables → Actions → New repository secret）
+      # ----------------------------------------------------------------
+      - name: Generate space business report
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python src/main.py
+
+      # ----------------------------------------------------------------
+      # 5. 生成された PPTX を Artifacts に保存（30 日間保持）
+      # ----------------------------------------------------------------
+      - name: Upload report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: space-report-${{ github.run_id }}
+          path: output/*.pptx
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ----------------------------------------------------------------
+      # 6. 収集・分析の中間データも保存（デバッグ用、7 日間保持）
+      # ----------------------------------------------------------------
+      - name: Upload intermediate data as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: intermediate-data-${{ github.run_id }}
+          path: |
+            data/raw_news.json
+            data/analyzed_report.json
+          retention-days: 7
+          if-no-files-found: warn
